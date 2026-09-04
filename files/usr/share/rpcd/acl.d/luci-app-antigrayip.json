@@ -1,0 +1,14 @@
+{
+	"luci-app-antigrayip": {
+		"description": "Grant UCI access for AntiGrayIP",
+		"read": {
+			"uci": [ "antigrayip" ],
+			"file": {
+				"/var/log/antigrayip.log": [ "read" ]
+			}
+		},
+		"write": {
+			"uci": [ "antigrayip" ]
+		}
+	}
+}

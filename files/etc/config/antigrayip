@@ -1,0 +1,20 @@
+config antigrayip 'settings'
+	option enabled '1'
+	option interface 'wan'
+	option interval '30'
+	option retry_delay '10'
+	option max_retries '5'
+	option escalate_reboot '0'
+	option escalate_after '10'
+	option log_file '/var/log/antigrayip.log'
+
+	# Диапазоны, которые считаются "серыми" (приватными/CGNAT).
+	# 100.64.0.0/10 - это именно тот пул, из которого Ростелеком раздаёт
+	# CGNAT-адреса (RFC 6598); остальные - стандартные RFC1918 + link-local.
+	# Список можно редактировать в LuCI (Службы -> AntiGrayIP) или прямо
+	# здесь, добавляя/удаляя строки "list gray_subnet 'a.b.c.d/n'".
+	list gray_subnet '10.0.0.0/8'
+	list gray_subnet '172.16.0.0/12'
+	list gray_subnet '192.168.0.0/16'
+	list gray_subnet '100.64.0.0/10'
+	list gray_subnet '169.254.0.0/16'

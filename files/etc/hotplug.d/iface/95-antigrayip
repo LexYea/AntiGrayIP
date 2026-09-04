@@ -1,0 +1,14 @@
+#!/bin/sh
+# Nudge antigrayip to re-check right after the watched interface comes up,
+# instead of waiting for the next poll interval.
+
+. /lib/functions.sh
+
+[ "$ACTION" = "ifup" ] || exit 0
+
+config_load antigrayip
+config_get watched_iface settings interface 'wan'
+
+[ "$INTERFACE" = "$watched_iface" ] || exit 0
+
+( sleep 5; /etc/init.d/antigrayip running >/dev/null 2>&1 && kill -HUP "$(pidof antigrayip.sh)" 2>/dev/null ) &

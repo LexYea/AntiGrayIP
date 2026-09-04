@@ -1,0 +1,13 @@
+{
+	"admin/services/antigrayip": {
+		"title": "AntiGrayIP",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "antigrayip"
+		},
+		"depends": {
+			"acl": [ "luci-app-antigrayip" ]
+		}
+	}
+}
