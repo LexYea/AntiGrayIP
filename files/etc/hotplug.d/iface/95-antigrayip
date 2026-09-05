@@ -1,14 +1,17 @@
 #!/bin/sh
-# Nudge antigrayip to re-check right after the watched interface comes up,
-# instead of waiting for the next poll interval.
-
-. /lib/functions.sh
+# Nudge antigrayip to re-check right after a watched interface comes up,
+# instead of waiting for the next poll interval. Works with any number of
+# configured WAN interfaces.
 
 [ "$ACTION" = "ifup" ] || exit 0
 
-config_load antigrayip
-config_get watched_iface settings interface 'wan'
+ifaces="$(uci -q get antigrayip.settings.interface)"
+[ -z "$ifaces" ] && ifaces="wan"
 
-[ "$INTERFACE" = "$watched_iface" ] || exit 0
+match=0
+for i in $ifaces; do
+	[ "$i" = "$INTERFACE" ] && match=1
+done
+[ "$match" = "1" ] || exit 0
 
 ( sleep 5; /etc/init.d/antigrayip running >/dev/null 2>&1 && kill -HUP "$(pidof antigrayip.sh)" 2>/dev/null ) &

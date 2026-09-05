@@ -1,6 +1,9 @@
 #!/bin/sh
-# antigrayip.sh - watch WAN IP, restart WAN while ISP hands out a private/CGNAT
-# ("gray") address, stop once a public ("white") address is obtained.
+# antigrayip.sh - watch one or more WAN IPs, restart the affected interface
+# while the ISP hands out a private/CGNAT ("gray") address, until a public
+# ("white") address is obtained. Supports dual-WAN / several WAN ports:
+# each interface listed in antigrayip.settings.interface is checked and
+# reconnected independently.
 #
 # Gray/private ranges are read from the editable UCI list
 # antigrayip.settings.gray_subnet (CIDR notation). If that list is empty
@@ -11,7 +14,11 @@
 . /lib/functions/network.sh
 
 CFG=antigrayip
+STATE_DIR=/var/run/antigrayip
 DEFAULT_SUBNETS="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16"
+DEFAULT_IFACES="wan"
+
+mkdir -p "$STATE_DIR"
 
 log() {
 	local msg="$1"
@@ -22,13 +29,22 @@ log() {
 load_cfg() {
 	config_load "$CFG"
 	config_get enabled        settings enabled        '1'
-	config_get iface          settings interface      'wan'
 	config_get interval       settings interval       '30'
 	config_get retry_delay    settings retry_delay    '10'
 	config_get max_retries    settings max_retries    '5'
 	config_get escalate_reboot settings escalate_reboot '0'
 	config_get escalate_after settings escalate_after '10'
 	config_get log_file       settings log_file       '/var/log/antigrayip.log'
+}
+
+# Monitored interfaces come from the editable UCI list "interface"; works
+# uniformly whether it's a modern "list interface '...'" (possibly several
+# entries) or a legacy single "option interface 'wan'" from an older config.
+get_ifaces() {
+	local out
+	out="$(uci -q get "${CFG}.settings.interface")"
+	[ -z "$out" ] && out="$DEFAULT_IFACES"
+	echo "$out"
 }
 
 # --- CIDR matching (pure POSIX shell, no ipcalc/awk dependency) -----------
@@ -93,60 +109,77 @@ is_private_ip() {
 	[ "$GRAY_MATCH" -eq 1 ]
 }
 
+# --- per-interface fail-count persistence (survives loop iterations) ------
+
+iface_id() {
+	echo "$1" | tr -c 'A-Za-z0-9_' '_'
+}
+
+read_fail() {
+	local f="$STATE_DIR/fail.$(iface_id "$1")"
+	[ -f "$f" ] && cat "$f" || echo 0
+}
+
+write_fail() {
+	echo "$2" > "$STATE_DIR/fail.$(iface_id "$1")"
+}
+
 # ---------------------------------------------------------------------------
 
-get_wan_ip() {
-	local ipaddr
+check_iface() {
+	local iface="$1" ip fc
+
+	fc="$(read_fail "$iface")"
+
 	network_flush_cache
-	network_get_ipaddr ipaddr "$iface"
-	echo "$ipaddr"
+	ip=""
+	network_get_ipaddr ip "$iface"
+
+	if [ -z "$ip" ]; then
+		log "[$iface] нет адреса"
+		return
+	fi
+
+	if is_private_ip "$ip"; then
+		fc=$((fc + 1))
+		write_fail "$iface" "$fc"
+		log "[$iface] серый IP: $ip (попытка $fc)"
+
+		if [ "$escalate_reboot" = "1" ] && [ "$fc" -ge "${escalate_after:-10}" ]; then
+			log "[$iface] порог эскалации ($escalate_after) достигнут, перезагрузка роутера"
+			sync
+			reboot
+			exit 0
+		fi
+
+		if [ "$fc" = "${max_retries:-5}" ]; then
+			log "[$iface] ПРЕДУПРЕЖДЕНИЕ: всё ещё серый после $max_retries попыток подряд"
+		fi
+
+		log "[$iface] перезапуск интерфейса"
+		ifdown "$iface" 2>/dev/null
+		sleep 2
+		ifup "$iface" 2>/dev/null
+		sleep "${retry_delay:-10}"
+	else
+		[ "$fc" -gt 0 ] && log "[$iface] белый IP получен: $ip"
+		write_fail "$iface" 0
+	fi
 }
 
-reconnect() {
-	log "restarting interface '$iface'"
-	ifdown "$iface" 2>/dev/null
-	sleep 2
-	ifup "$iface" 2>/dev/null
-}
-
-fail_count=0
 load_cfg
 
 while true; do
 	load_cfg
 
 	if [ "$enabled" != "1" ]; then
-		fail_count=0
 		sleep "${interval:-30}"
 		continue
 	fi
 
-	ip="$(get_wan_ip)"
-
-	if [ -z "$ip" ]; then
-		log "interface '$iface' has no address yet"
-	elif is_private_ip "$ip"; then
-		fail_count=$((fail_count + 1))
-		log "gray IP on '$iface': $ip (attempt $fail_count)"
-
-		if [ "$escalate_reboot" = "1" ] && [ "$fail_count" -ge "${escalate_after:-10}" ]; then
-			log "escalation threshold ($escalate_after) reached, rebooting router"
-			sync
-			reboot
-			exit 0
-		fi
-
-		if [ "$fail_count" = "${max_retries:-5}" ]; then
-			log "WARNING: still gray after $max_retries attempts, continuing"
-		fi
-
-		reconnect
-		sleep "${retry_delay:-10}"
-		continue
-	else
-		[ "$fail_count" -gt 0 ] && log "white IP obtained on '$iface': $ip"
-		fail_count=0
-	fi
+	for iface in $(get_ifaces); do
+		check_iface "$iface"
+	done
 
 	sleep "${interval:-30}"
 done

@@ -48,9 +48,13 @@ return view.extend({
 		o = s.option(form.Flag, 'enabled', T('Enabled', 'Включено'));
 		o.rmempty = false;
 
-		o = s.option(form.ListValue, 'interface', T('Logical interface', 'Логический интерфейс'),
-			T('Choose from the interfaces configured in Network → Interfaces', 
-			  'Выбор из интерфейсов, настроенных в Сеть → Интерфейсы'));
+		o = s.option(form.MultiValue, 'interface', T('WAN interfaces', 'WAN-интерфейсы'),
+			T('Select one or more logical interfaces to monitor — useful when the router has ' +
+			  'two or more WAN ports/interfaces (dual-WAN, failover). Each is checked and ' +
+			  'reconnected independently.',
+			  'Выберите один или несколько логических интерфейсов для мониторинга — актуально, ' +
+			  'если на роутере два и более WAN-портов/интерфейсов (dual-WAN, резервирование). ' +
+			  'Каждый проверяется и переподключается независимо от остальных.'));
 		o.rmempty = false;
 		nets.forEach(function (net) {
 			var dev = net.getDevice();
@@ -60,9 +64,12 @@ return view.extend({
 		// keep whatever is already saved selectable even if it disappeared
 		// from the current network config (e.g. device renamed)
 		var saved = uci.get('antigrayip', 'settings', 'interface');
-		if (saved && !nets.some(function (n) { return n.getName() === saved; })) {
-			o.value(saved, saved + ' ' + T('(not found)', '(не найден)'));
-		}
+		var savedList = Array.isArray(saved) ? saved : (saved ? [ saved ] : []);
+		savedList.forEach(function (v) {
+			if (!nets.some(function (n) { return n.getName() === v; })) {
+				o.value(v, v + ' ' + T('(not found)', '(не найден)'));
+			}
+		});
 
 		o = s.option(form.Value, 'interval', T('Check interval (s)', 'Интервал проверки (с)'));
 		o.datatype = 'uinteger';
