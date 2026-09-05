@@ -11,6 +11,7 @@
 #
 #  Или сразу нужным действием:
 #    sh <(wget -qO - '.../AGIP-Manager.sh') install|update|status|remove|purge
+#    sh <(wget -qO - '.../AGIP-Manager.sh') update force   # обновить, даже если версия та же
 #
 #  Отдельные короткие скрипты (тонкие обёртки над этим менеджером):
 #    sh <(wget -qO - '.../agip-install.sh')
@@ -20,6 +21,8 @@
 #  скачивания.
 # ============================================================
 
+MANAGER_VERSION="1.1.0"   # держите в паре с /VERSION в репозитории
+
 REPO_USER="LexYea"
 REPO_NAME="AntiGrayIP"
 BRANCH="main"
@@ -27,21 +30,25 @@ RAW_BASE="https://raw.githubusercontent.com/${REPO_USER}/${REPO_NAME}/${BRANCH}"
 MANAGER_URL="${RAW_BASE}/AGIP-Manager.sh"
 MANAGER_LOCAL="/usr/bin/agip-manager.sh"
 MARKER="/usr/lib/antigrayip.files"
+VERSION_LOCAL="/usr/lib/antigrayip.version"
 
-# repo_path : dest_path : mode ("config" for the UCI file, or chmod octal)
-FILES='files/etc/config/antigrayip:/etc/config/antigrayip:config
-files/usr/bin/antigrayip.sh:/usr/bin/antigrayip.sh:0755
-files/etc/init.d/antigrayip:/etc/init.d/antigrayip:0755
-files/etc/hotplug.d/iface/95-antigrayip:/etc/hotplug.d/iface/95-antigrayip:0755
-files/usr/share/rpcd/acl.d/luci-app-antigrayip.json:/usr/share/rpcd/acl.d/luci-app-antigrayip.json:0644
-files/usr/share/luci/menu.d/luci-mod-antigrayip.json:/usr/share/luci/menu.d/luci-mod-antigrayip.json:0644
-files/www/luci-static/resources/view/antigrayip.js:/www/luci-static/resources/view/antigrayip.js:0644'
+# repo_path : dest_path : mode ("config" для UCI-файла, либо chmod-октал) : ожидаемое начало файла (для проверки перед установкой)
+FILES="files/etc/config/antigrayip:/etc/config/antigrayip:config:config antigrayip
+files/usr/bin/antigrayip.sh:/usr/bin/antigrayip.sh:0755:#!/bin/sh
+files/etc/init.d/antigrayip:/etc/init.d/antigrayip:0755:#!/bin/sh /etc/rc.common
+files/etc/hotplug.d/iface/95-antigrayip:/etc/hotplug.d/iface/95-antigrayip:0755:#!/bin/sh
+files/usr/share/rpcd/acl.d/luci-app-antigrayip.json:/usr/share/rpcd/acl.d/luci-app-antigrayip.json:0644:{
+files/usr/share/luci/menu.d/luci-mod-antigrayip.json:/usr/share/luci/menu.d/luci-mod-antigrayip.json:0644:{
+files/www/luci-static/resources/view/antigrayip.js:/www/luci-static/resources/view/antigrayip.js:0644:'use strict';"
 
 banner() {
-	cat << 'EOF'
+	local v=""
+	[ -f "$VERSION_LOCAL" ] && v="   Установлено: v$(cat "$VERSION_LOCAL")"
+	cat << EOF
 ================================================================
    AntiGrayIP manager  —  by LexYea  (aedev.ru)
    https://aedev.ru   |   https://github.com/LexYea/AntiGrayIP
+   Менеджер v${MANAGER_VERSION}${v}
 ================================================================
 EOF
 }
@@ -55,6 +62,15 @@ fetch() {
 	fi
 }
 
+fetch_text() {
+	# echoes remote text content (one line), or nothing on failure
+	local t="/tmp/agip_txt.$$"
+	if fetch "$1" "$t" 2>/dev/null; then
+		tr -d '\r\n' < "$t"
+	fi
+	rm -f "$t"
+}
+
 downloader_hint() {
 	echo "Проверьте, что на роутере есть рабочий HTTPS-загрузчик (curl или wget с SSL):"
 	if command -v apk >/dev/null 2>&1; then
@@ -64,10 +80,42 @@ downloader_hint() {
 	fi
 }
 
+# Скачивает файл во временное место и проверяет, что он начинается с
+# ожидаемой сигнатуры, прежде чем подменить боевой файл. Это защищает от
+# ситуации, когда по какой-то причине (неверный путь, кэш, опечатка при
+# ручной публикации файла в репозитории) под нужным именем приходит
+# совсем не то содержимое - раньше такой файл тихо перезаписывал рабочий
+# скрипт и ломал службу.
+verify_and_install() {
+	# $1=tmpfile $2=dst $3=expected_prefix $4=kind
+	local tmp="$1" dst="$2" prefix="$3" kind="$4" first_line
+
+	if [ ! -s "$tmp" ]; then
+		echo "  ! получен пустой файл: $dst"
+		return 1
+	fi
+
+	first_line="$(head -n 1 "$tmp")"
+	case "$first_line" in
+		"$prefix"*) : ;;
+		*)
+			echo "  ! содержимое не прошло проверку: $dst"
+			echo "    ожидалось начало : $prefix"
+			echo "    получено         : $first_line"
+			return 1
+			;;
+	esac
+
+	mkdir -p "$(dirname "$dst")"
+	mv "$tmp" "$dst"
+	[ "$kind" != "config" ] && chmod "$kind" "$dst" 2>/dev/null
+	return 0
+}
+
 deploy_files() {
 	# $1 = install | update
 	mode="$1"
-	printf '%s\n' "$FILES" | while IFS=':' read -r src dst kind; do
+	printf '%s\n' "$FILES" | while IFS=':' read -r src dst kind prefix; do
 		[ -z "$src" ] && continue
 
 		if [ "$kind" = "config" ]; then
@@ -79,37 +127,56 @@ deploy_files() {
 				echo "  keep   $dst"
 				continue
 			fi
-			mkdir -p "$(dirname "$dst")"
-			echo "  write  $dst"
-			fetch "${RAW_BASE}/${src}" "$dst" || { echo "  ! не удалось скачать $src"; downloader_hint; exit 1; }
-			continue
 		fi
 
-		mkdir -p "$(dirname "$dst")"
 		echo "  write  $dst"
-		fetch "${RAW_BASE}/${src}" "$dst" || { echo "  ! не удалось скачать $src"; downloader_hint; exit 1; }
-		chmod "$kind" "$dst"
+		tmp="/tmp/agip_dl.$$.$(basename "$dst")"
+		if ! fetch "${RAW_BASE}/${src}" "$tmp"; then
+			echo "  ! не удалось скачать $src"
+			downloader_hint
+			rm -f "$tmp"
+			exit 1
+		fi
+		if ! verify_and_install "$tmp" "$dst" "$prefix" "$kind"; then
+			echo "  ! обновление прервано, файл $dst не тронут"
+			rm -f "$tmp"
+			exit 1
+		fi
 	done
 }
 
 save_manifest() {
-	printf '%s\n' "$FILES" | while IFS=':' read -r src dst kind; do
+	printf '%s\n' "$FILES" | while IFS=':' read -r src dst kind prefix; do
 		[ "$kind" = "config" ] && continue
 		echo "$dst"
 	done > "$MARKER"
 }
 
 install_manager_locally() {
-	if fetch "$MANAGER_URL" "$MANAGER_LOCAL" 2>/dev/null && chmod 0755 "$MANAGER_LOCAL" && ln -sf "$MANAGER_LOCAL" /usr/bin/agip; then
-		echo "Менеджер сохранён: команда 'agip' доступна в системе."
-	else
-		echo "Не удалось сохранить локальную копию менеджера (не критично, основной пакет уже установлен)."
+	local tmp="/tmp/agip_mgr.$$"
+	if fetch "$MANAGER_URL" "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+		case "$(head -n 1 "$tmp")" in
+			"#!/bin/sh"*)
+				mv "$tmp" "$MANAGER_LOCAL"
+				chmod 0755 "$MANAGER_LOCAL"
+				ln -sf "$MANAGER_LOCAL" /usr/bin/agip
+				echo "Менеджер сохранён: команда 'agip' доступна в системе."
+				return 0
+				;;
+		esac
 	fi
+	rm -f "$tmp"
+	echo "Не удалось сохранить локальную копию менеджера (не критично, основной пакет уже установлен)."
 }
 
 reload_luci() {
 	rm -f /tmp/luci-indexcache /tmp/luci-modulecache/* 2>/dev/null
 	/etc/init.d/rpcd restart >/dev/null 2>&1
+}
+
+save_version() {
+	local ver="$1"
+	[ -n "$ver" ] && echo "$ver" > "$VERSION_LOCAL"
 }
 
 do_install() {
@@ -118,31 +185,52 @@ do_install() {
 	mkdir -p /usr/share/rpcd/acl.d /usr/share/luci/menu.d /www/luci-static/resources/view /etc/hotplug.d/iface
 	deploy_files install || { echo "Установка прервана из-за ошибки."; exit 1; }
 	save_manifest
+
+	remote_ver="$(fetch_text "${RAW_BASE}/VERSION")"
+	save_version "${remote_ver:-$MANAGER_VERSION}"
+
 	/etc/init.d/antigrayip enable
 	/etc/init.d/antigrayip restart
 	reload_luci
 	install_manager_locally
 	echo
-	echo "Готово. LuCI: Службы -> AntiGrayIP."
+	echo "Готово. Версия: ${remote_ver:-$MANAGER_VERSION}. LuCI: Службы -> AntiGrayIP."
 	echo "Дальше управлять можно командой: agip"
 }
 
 do_update() {
+	local force="$1"
 	banner
+
 	if [ ! -x /etc/init.d/antigrayip ]; then
 		echo "AntiGrayIP не установлен, ставлю с нуля."
 		do_install
 		return
 	fi
+
+	local_ver="$( [ -f "$VERSION_LOCAL" ] && cat "$VERSION_LOCAL" || echo "" )"
+	remote_ver="$(fetch_text "${RAW_BASE}/VERSION")"
+
+	echo "Установленная версия : ${local_ver:-неизвестно}"
+	echo "Доступная версия     : ${remote_ver:-не удалось определить}"
+
+	if [ -n "$remote_ver" ] && [ "$remote_ver" = "$local_ver" ] && [ "$force" != "force" ]; then
+		echo "Уже установлена последняя версия. Обновление не требуется."
+		echo "Принудительно: agip update force"
+		return 0
+	fi
+
 	echo "Обновление AntiGrayIP (конфиг и лог не трогаются)..."
 	deploy_files update || { echo "Обновление прервано из-за ошибки."; exit 1; }
 	save_manifest
+	save_version "${remote_ver:-$local_ver}"
+
 	/etc/init.d/antigrayip enable
 	/etc/init.d/antigrayip restart
 	reload_luci
 	install_manager_locally
 	echo
-	echo "Обновление завершено."
+	echo "Обновление завершено. Версия: ${remote_ver:-$local_ver}"
 }
 
 DEFAULT_SUBNETS="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16"
@@ -197,20 +285,25 @@ do_status() {
 	[ -z "$iface" ] && iface="wan"
 
 	. /lib/functions/network.sh 2>/dev/null
-	network_flush_cache 2>/dev/null
-	network_get_ipaddr ipaddr "$iface" 2>/dev/null
 
+	echo "Версия           : $( [ -f "$VERSION_LOCAL" ] && cat "$VERSION_LOCAL" || echo неизвестно )"
 	echo "Автозапуск       : $en"
 	echo "Служба запущена  : $run"
-	echo "Интерфейс        : $iface"
-	echo "Текущий IP       : ${ipaddr:-<нет>}"
-	if [ -n "$ipaddr" ]; then
-		if is_private_ip "$ipaddr"; then
-			echo "Тип IP           : серый/приватный"
+	echo "WAN-интерфейсы   :"
+	for i in $iface; do
+		network_flush_cache 2>/dev/null
+		ipaddr=""
+		network_get_ipaddr ipaddr "$i" 2>/dev/null
+		if [ -n "$ipaddr" ]; then
+			if is_private_ip "$ipaddr"; then
+				echo "  - $i: $ipaddr (серый/приватный)"
+			else
+				echo "  - $i: $ipaddr (белый/публичный)"
+			fi
 		else
-			echo "Тип IP           : белый/публичный"
+			echo "  - $i: <нет адреса>"
 		fi
-	fi
+	done
 
 	subnets="$(get_gray_subnets)"
 	if [ -z "$subnets" ]; then
@@ -253,12 +346,13 @@ do_remove() {
 		done < "$MARKER"
 		rm -f "$MARKER"
 	else
-		printf '%s\n' "$FILES" | while IFS=':' read -r src dst kind; do
+		printf '%s\n' "$FILES" | while IFS=':' read -r src dst kind prefix; do
 			[ "$kind" = "config" ] && continue
 			rm -f "$dst"
 		done
 	fi
 
+	rm -f "$VERSION_LOCAL"
 	reload_luci
 
 	if [ "$purge" = "1" ]; then
@@ -294,13 +388,13 @@ show_menu() {
 ACTION="$1"
 case "$ACTION" in
 	install)          do_install ;;
-	update)            do_update ;;
+	update)            shift; do_update "$@" ;;
 	status)            do_status ;;
 	remove|uninstall)  shift; do_remove "$@" ;;
 	purge)             do_remove --purge ;;
 	""|menu)           show_menu ;;
 	*)
-		echo "Использование: $0 [install|update|status|remove|purge]"
+		echo "Использование: $0 [install|update [force]|status|remove|purge]"
 		exit 1
 		;;
 esac
