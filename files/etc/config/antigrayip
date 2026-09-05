@@ -1,12 +1,17 @@
 config antigrayip 'settings'
 	option enabled '1'
-	option interface 'wan'
 	option interval '30'
 	option retry_delay '10'
 	option max_retries '5'
 	option escalate_reboot '0'
 	option escalate_after '10'
 	option log_file '/var/log/antigrayip.log'
+
+	# Логические WAN-интерфейсы для мониторинга. Можно указать несколько
+	# строк "list interface '...'" - актуально при двух и более WAN-портах
+	# (dual-WAN/failover), каждый интерфейс проверяется и переподключается
+	# независимо от остальных.
+	list interface 'wan'
 
 	# Диапазоны, которые считаются "серыми" (приватными/CGNAT).
 	# 100.64.0.0/10 - это именно тот пул, из которого Ростелеком раздаёт
