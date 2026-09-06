@@ -1,36 +1,37 @@
 #!/bin/sh
-# agip-uninstall.sh - удаление AntiGrayIP.
-# Скачивает AGIP-Manager.sh и запускает его с действием "remove".
-# Добавьте --purge, чтобы удалить ещё и конфиг с логом:
+# agip-uninstall.sh - самостоятельное удаление AntiGrayIP.
+# Не зависит от AGIP-Manager.sh и не требует интернета.
 #
-#   sh <(wget -qO - 'https://raw.githubusercontent.com/LexYea/AntiGrayIP/main/agip-uninstall.sh')
-#   sh <(wget -qO - 'https://raw.githubusercontent.com/LexYea/AntiGrayIP/main/agip-uninstall.sh') --purge
+#   sh agip-uninstall.sh            # конфиг и лог остаются
+#   sh agip-uninstall.sh --purge    # удалить всё, включая конфиг и лог
 #
 # by LexYea | aedev.ru
 
 set -e
 
-RAW_BASE="https://raw.githubusercontent.com/LexYea/AntiGrayIP/main"
-TMP="/tmp/agip-manager.$$.sh"
+purge=0
+[ "$1" = "--purge" ] || [ "$1" = "-c" ] && purge=1
 
-fetch() {
-	if command -v curl >/dev/null 2>&1; then
-		curl -fsSL "$1" -o "$2"
-	else
-		wget -qO "$2" "$1"
-	fi
-}
+/etc/init.d/antigrayip stop 2>/dev/null || true
+/etc/init.d/antigrayip disable 2>/dev/null || true
 
-if ! fetch "${RAW_BASE}/AGIP-Manager.sh" "$TMP"; then
-	echo "Не удалось скачать AGIP-Manager.sh."
-	if command -v apk >/dev/null 2>&1; then
-		echo "Проверьте HTTPS-поддержку: apk update && apk add wget curl"
-	else
-		echo "Проверьте HTTPS-поддержку: opkg update && opkg install wget-ssl"
-	fi
-	rm -f "$TMP"
-	exit 1
+rm -f /usr/bin/antigrayip.sh
+rm -f /etc/init.d/antigrayip
+rm -f /etc/hotplug.d/iface/95-antigrayip
+rm -f /usr/share/rpcd/acl.d/luci-app-antigrayip.json
+rm -f /usr/share/luci/menu.d/luci-mod-antigrayip.json
+rm -f /www/luci-static/resources/view/antigrayip.js
+rm -f /usr/lib/antigrayip.version
+rm -f /usr/lib/antigrayip.files
+rm -f /usr/bin/agip-manager.sh /usr/bin/agip
+
+rm -f /tmp/luci-indexcache /tmp/luci-modulecache/* 2>/dev/null || true
+/etc/init.d/rpcd restart >/dev/null 2>&1 || true
+
+if [ "$purge" = "1" ]; then
+	rm -f /etc/config/antigrayip /var/log/antigrayip.log
+	echo "AntiGrayIP удалён полностью, включая конфиг и лог."
+else
+	echo "AntiGrayIP удалён. Конфиг /etc/config/antigrayip и лог оставлены."
+	echo "Для полного удаления: sh agip-uninstall.sh --purge"
 fi
-
-sh "$TMP" remove "$@"
-rm -f "$TMP"
