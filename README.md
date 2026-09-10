@@ -1,7 +1,8 @@
 
 # AntiGrayIP
 
-<img width="1231" height="1209" alt="agip-screenshot" src="https://github.com/user-attachments/assets/821acb49-7b3f-4585-bf72-916e95cc86db" />
+<img alt="agip-screenshot" src="https://github.com/user-attachments/assets/92b5f2f0-e254-45a6-90b2-e8ecd46fb518" />
+
 
 **Автоматический контроль "серого" IP на WAN для OpenWrt.**
 Следит за адресом, который выдал провайдер (например, Ростелеком через CGNAT), и перезапускает WAN‑интерфейс до тех пор, пока не будет получен публичный ("белый") IP.
